@@ -221,9 +221,28 @@ async def web_server():
     await site.start()
     print(f"Web server started on port {PORT}")
 
+async def auto_ping():
+    """Pings the server externally every 5 minutes to keep it 24/7 alive."""
+    import aiohttp
+    while True:
+        await asyncio.sleep(300) # 5 minutes
+        url = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PING_URL")
+        if url:
+            try:
+                if not url.startswith("http"):
+                    url = f"https://{url}"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as response:
+                        print(f"Auto-pinger (24/7 Alive): Pinged {url} - Status: {response.status}")
+            except Exception as e:
+                print(f"Auto-pinger error: {e}")
+
 async def main():
     print("Starting web server concurrent with bot...")
     await web_server()
+    
+    # 24/7 Alive Option Restored
+    asyncio.create_task(auto_ping())
     
     print("Bot is fully active and listening.")
     await idle()
