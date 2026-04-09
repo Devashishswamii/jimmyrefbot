@@ -237,16 +237,11 @@ async def auto_ping():
             except Exception as e:
                 print(f"Auto-pinger error: {e}")
 
-async def main():
-    print("Starting web server concurrent with bot...")
-    await web_server()
-    
-    # 24/7 Alive Option Restored
-    asyncio.create_task(auto_ping())
-    
-    print("Bot is fully active and listening.")
-    await idle()
-
 if __name__ == "__main__":
+    print("Starting background web server and tasks...")
+    loop = asyncio.get_event_loop()
+    loop.create_task(web_server())
+    loop.create_task(auto_ping())
+    
     print("Initializing Pyrogram Event Loop...")
-    app.run(main())
+    app.run()
