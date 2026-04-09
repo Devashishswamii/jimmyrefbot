@@ -222,20 +222,12 @@ async def web_server():
     print(f"Web server started on port {PORT}")
 
 async def main():
-    print("Starting bot...")
-    await app.start()
-    
-    # Start web server concurrent with bot
+    print("Starting web server concurrent with bot...")
     await web_server()
     
     print("Bot is fully active and listening.")
     await idle()
-    
-    print("Stopping bot...")
-    await app.stop()
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    print("Initializing Pyrogram Event Loop...")
+    app.run(main())
