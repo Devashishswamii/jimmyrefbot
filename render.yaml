@@ -1,9 +1,7 @@
 services:
   - type: web
     name: jimmyrefbot
-    env: python
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python bot.py"
+    env: docker
     envVars:
       - key: BOT_TOKEN
         sync: false
