@@ -215,7 +215,7 @@ async def auto_ping():
     """Pings the server externally every 10 minutes to prevent Render from putting it to sleep."""
     import aiohttp
     while True:
-        await asyncio.sleep(600) # 10 minutes
+        await asyncio.sleep(60) # 1 minute
         # Render provides this env var by default
         url = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PING_URL")
         if url:
