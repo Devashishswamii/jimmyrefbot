@@ -19,7 +19,8 @@ app = Client(
     "captcha_bot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN
+    bot_token=BOT_TOKEN,
+    in_memory=True
 )
 
 PROMO_MESSAGE = """📨 Your links (valid for ⏳ 60 seconds):
@@ -220,33 +221,12 @@ async def web_server():
     await site.start()
     print(f"Web server started on port {PORT}")
 
-async def auto_ping():
-    """Pings the server externally every 10 minutes to prevent Render from putting it to sleep."""
-    import aiohttp
-    while True:
-        await asyncio.sleep(60) # 1 minute
-        # Render provides this env var by default
-        url = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PING_URL")
-        if url:
-            try:
-                # Ensure it has http protocol
-                if not url.startswith("http"):
-                    url = f"https://{url}"
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(url) as response:
-                        print(f"Auto-pinger (Anti-Sleep): Pinged {url} - Status: {response.status}")
-            except Exception as e:
-                print(f"Auto-pinger error: {e}")
-
 async def main():
     print("Starting bot...")
     await app.start()
     
     # Start web server concurrent with bot
     await web_server()
-    
-    # Start background auto-pinger
-    asyncio.create_task(auto_ping())
     
     print("Bot is fully active and listening.")
     await idle()
