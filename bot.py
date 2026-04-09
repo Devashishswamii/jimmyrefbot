@@ -22,7 +22,7 @@ app = Client(
     bot_token=BOT_TOKEN
 )
 
-PROMO_MESSAGE = """📨 Your links (valid for 60 seconds):
+PROMO_MESSAGE = """📨 Your links (valid for ⏳ 60 seconds):
 
 ⚡️ JIMMY R£FUNDS ⚡️
 Reship Like a Pro. Control Like a Boss.
@@ -80,58 +80,64 @@ def generate_captcha_image(text):
 
 @app.on_message(filters.command("start") & filters.private)
 async def start_command(client, message):
-    # Generate random math problem
-    op = random.choice(['+', '-'])
-    if op == '+':
-        a = random.randint(10, 50)
-        b = random.randint(10, 50)
-        ans = a + b
-    else:
-        a = random.randint(20, 50)
-        b = random.randint(10, a - 1) # Keep answer positive
-        ans = a - b
-        
-    question_text = f"{a} {op} {b} = ?"
-    img_stream = generate_captcha_image(question_text)
-    
-    # Generate 4 choices
-    choices = [ans]
-    while len(choices) < 4:
-        offset = random.randint(1, 15)
-        # Randomly add or subtract the offset
-        direction = random.choice([1, -1])
-        wrong = ans + (offset * direction)
-        # Keep choices positive and unique
-        if wrong not in choices and wrong >= 0:
-            choices.append(wrong)
+    print(f"Received /start from {message.from_user.id}")
+    try:
+        # Generate random math problem
+        op = random.choice(['+', '-'])
+        if op == '+':
+            a = random.randint(10, 50)
+            b = random.randint(10, 50)
+            ans = a + b
+        else:
+            a = random.randint(20, 50)
+            b = random.randint(10, a - 1) # Keep answer positive
+            ans = a - b
             
-    # Shuffle so correct answer isn't always first
-    random.shuffle(choices)
-    
-    # Save correct answer in memory
-    ACTIVE_CAPTCHAS[message.from_user.id] = {"answer": ans}
-    
-    # Build a 2x2 keyboard
-    buttons = []
-    row = []
-    for c in choices:
-        row.append(InlineKeyboardButton(str(c), callback_data=f"verify_{c}"))
-        if len(row) == 2:
-            buttons.append(row)
-            row = []
-    if row:
-        buttons.append(row)
+        question_text = f"{a} {op} {b} = ?"
+        img_stream = generate_captcha_image(question_text)
         
-    await message.reply_photo(
-        photo=img_stream,
-        caption="🤖 Please solve this math problem to verify you are human.",
-        reply_markup=InlineKeyboardMarkup(buttons)
-    )
+        # Generate 4 choices
+        choices = [ans]
+        while len(choices) < 4:
+            offset = random.randint(1, 15)
+            # Randomly add or subtract the offset
+            direction = random.choice([1, -1])
+            wrong = ans + (offset * direction)
+            # Keep choices positive and unique
+            if wrong not in choices and wrong >= 0:
+                choices.append(wrong)
+                
+        # Shuffle so correct answer isn't always first
+        random.shuffle(choices)
+        
+        # Save correct answer in memory
+        ACTIVE_CAPTCHAS[message.from_user.id] = {"answer": ans}
+        
+        # Build a 2x2 keyboard
+        buttons = []
+        row = []
+        for c in choices:
+            row.append(InlineKeyboardButton(str(c), callback_data=f"verify_{c}"))
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+            
+        await message.reply_photo(
+            photo=img_stream,
+            caption="🤖 HUMAN VERIFICATION\n\nSOLVE THIS CAPTCHA TO GET LINK:",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+        print("Sent captcha successfully.")
+    except Exception as e:
+        print(f"ERROR inside start_command: {e}")
 
 @app.on_callback_query(filters.regex(r"^verify_(\d+)$"))
 async def verify_callback(client, callback_query):
     user_id = callback_query.from_user.id
     selected_answer = int(callback_query.matches[0].group(1))
+    print(f"Callback received: verify_{selected_answer} from {user_id}")
     
     captcha_data = ACTIVE_CAPTCHAS.get(user_id)
     if not captcha_data:
@@ -152,14 +158,17 @@ async def verify_callback(client, callback_query):
             pass # Ignore if we can't delete
         
         # Send promo message
-        promo_msg = await client.send_message(
-            chat_id=user_id,
-            text=PROMO_MESSAGE,
-            disable_web_page_preview=True
-        )
-        
-        # Schedule the deletion after exactly 60 seconds with timer updates
-        asyncio.create_task(delete_after_delay(client, user_id, promo_msg.id, 60))
+        try:
+            promo_msg = await client.send_message(
+                chat_id=user_id,
+                text=PROMO_MESSAGE,
+                disable_web_page_preview=True
+            )
+            print("Sent PROMO_MESSAGE successfully.")
+            # Schedule the deletion after exactly 60 seconds with timer updates
+            asyncio.create_task(delete_after_delay(client, user_id, promo_msg.id, 60))
+        except Exception as e:
+            print(f"ERROR sending PROMO_MESSAGE: {e}")
     else:
         # Failure
         await callback_query.answer("Incorrect answer! Please try again or type /start for a new question.", show_alert=True)
@@ -176,7 +185,7 @@ async def delete_after_delay(client, chat_id, message_id, delay):
         if time_left > 0:
             try:
                 # Update the countdown text
-                updated_text = PROMO_MESSAGE.replace("valid for 60 seconds", f"valid for {time_left} seconds")
+                updated_text = PROMO_MESSAGE.replace("valid for ⏳ 60 seconds", f"valid for ⏳ {time_left} seconds")
                 await client.edit_message_text(
                     chat_id=chat_id, 
                     message_id=message_id, 
