@@ -7,7 +7,7 @@ from aiohttp import web
 from pyrogram import Client, filters, idle
 from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from pyrogram.errors import MessageDeleteForbidden, FloodWait
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
 # Test API credentials, safe to leave as default unless user has their own
@@ -66,16 +66,33 @@ Welcome to the most trusted and efficient reship & R€fund network — where pr
 ACTIVE_CAPTCHAS = {}
 
 def generate_captcha_image(text):
-    # Create small image for pixel-art style text scaling
-    img = Image.new('RGB', (100, 40), color=(40, 40, 40))
+    # Native crystal clear 400x160 HD rendering
+    img = Image.new('RGB', (400, 160), color=(40, 40, 40))
     d = ImageDraw.Draw(img)
-    d.text((10, 15), text, fill=(255, 255, 255))
-    # Scale up to 400x160 using Nearest Neighbor to keep it sharp and readable
-    img = img.resize((400, 160), Image.Resampling.NEAREST)
+    
+    # Load smooth, anti-aliased native size font
+    try:
+        font = ImageFont.load_default(size=50)
+    except Exception:
+        font = ImageFont.load_default()
+        
+    # Beautifully center the math text
+    try:
+        bbox = d.textbbox((0, 0), text, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+    except Exception:
+        text_w = 200
+        text_h = 50
+        
+    x = (400 - text_w) / 2
+    y = (160 - text_h) / 2
+    
+    d.text((x, y), text, fill=(255, 255, 255), font=font)
     
     bio = io.BytesIO()
     bio.name = 'captcha.jpg'
-    img.save(bio, 'JPEG')
+    img.save(bio, 'JPEG', quality=95)
     bio.seek(0)
     return bio
 
