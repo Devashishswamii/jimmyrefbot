@@ -199,11 +199,11 @@ async def delete_after_delay(client, chat_id, message_id, delay):
 # --- Web Server to satisfy Render's health checks ---
 async def web_server():
     async def handle_ping(request):
-        return web.Response(text="Bot is running!")
+        return web.Response(text="Bot is alive and running!", status=200)
         
     webapp = web.Application()
-    webapp.router.add_get('/', handle_ping)
-    webapp.router.add_get('/ping', handle_ping)
+    # Catch-all route to avoid 404s
+    webapp.router.add_route('*', '/{tail:.*}', handle_ping)
     
     runner = web.AppRunner(webapp)
     await runner.setup()
@@ -211,12 +211,33 @@ async def web_server():
     await site.start()
     print(f"Web server started on port {PORT}")
 
+async def auto_ping():
+    """Pings the server externally every 10 minutes to prevent Render from putting it to sleep."""
+    import aiohttp
+    while True:
+        await asyncio.sleep(600) # 10 minutes
+        # Render provides this env var by default
+        url = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PING_URL")
+        if url:
+            try:
+                # Ensure it has http protocol
+                if not url.startswith("http"):
+                    url = f"https://{url}"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url) as response:
+                        print(f"Auto-pinger (Anti-Sleep): Pinged {url} - Status: {response.status}")
+            except Exception as e:
+                print(f"Auto-pinger error: {e}")
+
 async def main():
     print("Starting bot...")
     await app.start()
     
     # Start web server concurrent with bot
     await web_server()
+    
+    # Start background auto-pinger
+    asyncio.create_task(auto_ping())
     
     print("Bot is fully active and listening.")
     await idle()
