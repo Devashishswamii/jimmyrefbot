@@ -23,7 +23,7 @@ app = Client(
     in_memory=True
 )
 
-PROMO_MESSAGE = """📨 Your links (valid for ⏳ 60 seconds):
+PROMO_MESSAGE = """📨 Your links (valid for ⏳ {time_left} seconds):
 
 ⚡️ JIMMY R£FUNDS ⚡️
 Reship Like a Pro. Control Like a Boss.
@@ -38,22 +38,22 @@ Welcome to the most trusted and efficient reship & R€fund network — where pr
 📦 Official Jimmy Network Links:
 
 🔹 Cashback Lounge:
-👉 https://t.me/+9RWVKENGWCNlZmM1
+👉 {link_cashback}
 
 🔹 Announcement:
-👉  https://t.me/+EokQEhSg8itkNTc1
+👉  {link_announcement}
 
 🔹 StoreList:
-👉  https://t.me/+ICcnQdlC0OowZWFl
+👉  {link_storelist}
 
 🔹 Vouches:
-👉 https://t.me/+-aPg8maQlnllMGNl
+👉 {link_vouches}
 
 🔹 Cashout:
-👉 https://t.me/+tBZi9sd-SXAwNmY9
+👉 {link_cashout}
 
 🔹 BillPay/Discounts/bookings.
-👉  https://t.me/+3_LbdAOI1YdiMzM1
+👉  {link_billpay}
 
 👑 Founder & Refunder:
 👉 @JimmyRefund / @JimmyRefs 💎 https://t.me/JimmyRefund
@@ -64,6 +64,10 @@ Welcome to the most trusted and efficient reship & R€fund network — where pr
 
 # In-memory store: user_id -> {"answer": int}
 ACTIVE_CAPTCHAS = {}
+
+@app.on_message(filters.command("id"))
+async def id_command(client, message):
+    await message.reply(f"Here is the Chat ID:\n`{message.chat.id}`\n\nCopy that exact number and configure it in Render!")
 
 def generate_captcha_image(text):
     # Native crystal clear 400x160 HD rendering
@@ -175,24 +179,58 @@ async def verify_callback(client, callback_query):
         except MessageDeleteForbidden:
             pass # Ignore if we can't delete
         
-        # Send promo message
+        # Generate new one-time links dynamically
+        import datetime
+        # Expire slightly after the message deletion to ensure they can click it at second 59
+        expire_date = datetime.datetime.now() + datetime.timedelta(seconds=65) 
+        
+        chat_ids = {
+            "cashback": os.environ.get("CHAT_CASHBACK", ""),
+            "announcement": os.environ.get("CHAT_ANNOUNCEMENT", ""),
+            "storelist": os.environ.get("CHAT_STORELIST", ""),
+            "vouches": os.environ.get("CHAT_VOUCHES", ""),
+            "cashout": os.environ.get("CHAT_CASHOUT", ""),
+            "billpay": os.environ.get("CHAT_BILLPAY", "")
+        }
+        
+        generated_links = {}
+        active_invites = []
+        
+        for name, cid in chat_ids.items():
+            if cid:
+                try:
+                    invite = await client.create_chat_invite_link(
+                        chat_id=int(cid.strip()),
+                        member_limit=1,
+                        expire_date=expire_date
+                    )
+                    generated_links[f"link_{name}"] = invite.invite_link
+                    active_invites.append((int(cid.strip()), invite.invite_link))
+                except Exception as e:
+                    print(f"Failed generating link for {name}: {e}")
+                    generated_links[f"link_{name}"] = "❌ Error: Bot not Admin"
+            else:
+                 generated_links[f"link_{name}"] = "❌ Not Linked in Render"
+
+        formatted_promo = PROMO_MESSAGE.format(time_left="60", **generated_links)
+
         try:
             promo_msg = await client.send_message(
                 chat_id=user_id,
-                text=PROMO_MESSAGE,
+                text=formatted_promo,
                 disable_web_page_preview=True
             )
             print("Sent PROMO_MESSAGE successfully.")
             # Schedule the deletion after exactly 60 seconds with timer updates
-            asyncio.create_task(delete_after_delay(client, user_id, promo_msg.id, 60))
+            asyncio.create_task(delete_after_delay(client, user_id, promo_msg.id, 60, generated_links, active_invites))
         except Exception as e:
             print(f"ERROR sending PROMO_MESSAGE: {e}")
     else:
         # Failure
         await callback_query.answer("Incorrect answer! Please try again or type /start for a new question.", show_alert=True)
 
-async def delete_after_delay(client, chat_id, message_id, delay):
-    """Updates the message with a countdown timer, then deletes it."""
+async def delete_after_delay(client, chat_id, message_id, delay, links_dict, active_invites):
+    """Updates the message with a countdown timer, then deletes it and explicitly revokes all links."""
     time_left = delay
     step = 5  # Update the message every 5 seconds
     
@@ -203,7 +241,7 @@ async def delete_after_delay(client, chat_id, message_id, delay):
         if time_left > 0:
             try:
                 # Update the countdown text
-                updated_text = PROMO_MESSAGE.replace("valid for ⏳ 60 seconds", f"valid for ⏳ {time_left} seconds")
+                updated_text = PROMO_MESSAGE.format(time_left=str(time_left), **links_dict)
                 await client.edit_message_text(
                     chat_id=chat_id, 
                     message_id=message_id, 
@@ -216,6 +254,14 @@ async def delete_after_delay(client, chat_id, message_id, delay):
             except Exception as e:
                 # Ignore message not modified or other transient errors
                 pass
+
+    # Revoke all one-time links immediately, ensuring they are dead
+    for c_id, link in active_invites:
+        try:
+            await client.revoke_chat_invite_link(chat_id=c_id, invite_link=link)
+            print(f"Successfully killed link: {link}")
+        except Exception as e:
+            print(f"Failed to revoke link {link}: {e}")
 
     # Delete the message once time is up
     try:
