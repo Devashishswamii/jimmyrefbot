@@ -238,19 +238,21 @@ async def auto_ping():
 
 # ── Startup: called by app.run() INSIDE Pyrogram's own event loop ─────────────
 async def startup():
-    """Everything here runs inside Pyrogram's loop — safe, no loop mismatch."""
+    """
+    app.run(coroutine) does:
+      1. app.start()
+      2. run coroutine  ← we are here
+      3. app.stop()     ← happens immediately after unless we block
+
+    We MUST call idle() ourselves to keep the bot alive.
+    """
     await start_web_server()
     asyncio.get_event_loop().create_task(auto_ping())
-    print("[BOT] Ready \U0001F7E2 — listening 24/7, awaiting messages...")
-    # NOTE: idle() is called automatically by app.run() after this coroutine finishes
-    # NOTE: app.stop() is called automatically by app.run() when idle() ends
+    print("[BOT] \U0001F7E2 Ready — listening 24/7, awaiting messages...")
+    await idle()   # ← BLOCKS HERE FOREVER until SIGTERM/KeyboardInterrupt
 
 if __name__ == "__main__":
-    # app.run() manages its own event loop internally:
-    # 1. loop.run_until_complete(app.start())
-    # 2. loop.run_until_complete(startup())   ← our code
-    # 3. loop.run_until_complete(idle())      ← keeps alive forever
-    # 4. loop.run_until_complete(app.stop())  ← all on the SAME loop ✅
     print("[BOT] Initializing...")
     app.run(startup())
+
 
