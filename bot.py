@@ -300,11 +300,17 @@ async def auto_ping():
             except Exception as e:
                 print(f"Auto-pinger error: {e}")
 
+@app.on_message(filters.command("ping") & filters.private)
+async def ping_command(client, message):
+    await message.reply("✅ Bot is alive and running 24/7!")
+
+async def on_startup():
+    """Called INSIDE Pyrogram's own event loop — safe to create tasks here."""
+    print("Starting web server inside Pyrogram event loop...")
+    await web_server()
+    asyncio.get_event_loop().create_task(auto_ping())
+    print("✅ Bot fully started and listening 24/7!")
+
 if __name__ == "__main__":
-    print("Starting background web server and tasks...")
-    loop = asyncio.get_event_loop()
-    loop.create_task(web_server())
-    loop.create_task(auto_ping())
-    
-    print("Initializing Pyrogram Event Loop...")
-    app.run()
+    print("Initializing Pyrogram Bot...")
+    app.run(on_startup())
