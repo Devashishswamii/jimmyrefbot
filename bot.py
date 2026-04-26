@@ -304,13 +304,22 @@ async def auto_ping():
 async def ping_command(client, message):
     await message.reply("✅ Bot is alive and running 24/7!")
 
-async def on_startup():
-    """Called INSIDE Pyrogram's own event loop — safe to create tasks here."""
-    print("Starting web server inside Pyrogram event loop...")
+async def main():
+    """Main entry point - starts bot, web server, and auto-pinger then idles forever."""
+    print("Starting bot...")
+    await app.start()
+
+    print("Starting web server...")
     await web_server()
+
+    print("Starting 24/7 auto-pinger...")
     asyncio.get_event_loop().create_task(auto_ping())
-    print("✅ Bot fully started and listening 24/7!")
+
+    print("✅ Bot fully started and listening 24/7! Awaiting messages...")
+    await idle()
+
+    print("Shutting down...")
+    await app.stop()
 
 if __name__ == "__main__":
-    print("Initializing Pyrogram Bot...")
-    app.run(on_startup())
+    asyncio.run(main())
