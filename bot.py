@@ -1,6 +1,8 @@
 """
-Jimmy Refunds Captcha Bot
-Framework: python-telegram-bot v20 (asyncio-native, no loop conflicts)
+Jimmy Refunds Captcha Bot — Bulletproof Edition
+- python-telegram-bot v20 (synchronous entry, manages its own loop)
+- Health server uses stdlib http.server (no asyncio conflict)
+- Auto-pinger runs in a daemon thread
 """
 
 import os
@@ -9,16 +11,11 @@ import asyncio
 import io
 import datetime
 import threading
-import requests as req
+import requests as rq
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-from aiohttp import web
 from PIL import Image, ImageDraw, ImageFont
-
-from telegram import (
-    Update,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -39,7 +36,7 @@ CHAT_IDS = {
     "billpay":      os.environ.get("CHAT_BILLPAY", ""),
 }
 
-# ── Promo message template ────────────────────────────────────────────────────
+# ── Promo template ────────────────────────────────────────────────────────────
 PROMO_TEMPLATE = (
     "\U0001F4E8 Your exclusive links \u2014 valid for \u23F3 {time_left}s:\n\n"
     "\u26A1\uFE0F JIMMY R\u00A3FUNDS \u26A1\uFE0F\n"
@@ -82,18 +79,55 @@ def make_captcha_image(text: str) -> io.BytesIO:
     buf.seek(0)
     return buf
 
-# ── /id command ───────────────────────────────────────────────────────────────
+# ── Health check server (pure stdlib — zero asyncio) ──────────────────────────
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"Jimmy Bot is alive!"
+        self.send_response(200)
+        self.send_header("Content-Type",   "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def do_HEAD(self):
+        self.send_response(200)
+        self.end_headers()
+    def log_message(self, *args):
+        pass   # silence access logs
+
+def _start_health_server():
+    server = HTTPServer(("0.0.0.0", PORT), _HealthHandler)
+    print(f"[WEB]  Health server on port {PORT}")
+    server.serve_forever()
+
+# ── Auto-pinger thread (keeps Render free tier awake) ─────────────────────────
+def _auto_ping():
+    import time
+    url = os.environ.get("RENDER_EXTERNAL_URL", "").strip()
+    if not url:
+        print("[PING] RENDER_EXTERNAL_URL not set — skipping")
+        return
+    if not url.startswith("http"):
+        url = "https://" + url
+    while True:
+        time.sleep(240)   # every 4 minutes
+        try:
+            r = rq.get(url, timeout=10)
+            print(f"[PING] {url} → {r.status_code}")
+        except Exception as e:
+            print(f"[PING] error: {e}")
+
+# ── /id ───────────────────────────────────────────────────────────────────────
 async def cmd_id(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        f"\U0001F4CB Chat ID: `{update.effective_chat.id}`\n\nCopy this into Render env vars.",
+        f"\U0001F4CB Chat ID: `{update.effective_chat.id}`\n\nPaste into Render env vars.",
         parse_mode="Markdown",
     )
 
-# ── /ping command ─────────────────────────────────────────────────────────────
+# ── /ping ─────────────────────────────────────────────────────────────────────
 async def cmd_ping(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\u2705 Bot is alive and running 24/7!")
 
-# ── /start command ────────────────────────────────────────────────────────────
+# ── /start ────────────────────────────────────────────────────────────────────
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     print(f"[START] user={uid}")
@@ -113,7 +147,7 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             choices.append(w)
     random.shuffle(choices)
 
-    # Embed correct answer directly in callback_data → no DB needed
+    # Correct answer embedded in callback_data — no session store needed
     rows = [
         [
             InlineKeyboardButton(str(choices[0]), callback_data=f"ans_{choices[0]}_{ans}"),
@@ -129,69 +163,60 @@ async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         photo=make_captcha_image(f"{a} {op} {b} = ?"),
         caption=(
             "\U0001F916 HUMAN VERIFICATION\n\n"
-            "Solve the math problem above to receive your private group links:"
+            "Solve the math problem to get your private group links:"
         ),
         reply_markup=InlineKeyboardMarkup(rows),
     )
     print(f"[START] captcha sent to {uid}")
 
-# ── Button callback ───────────────────────────────────────────────────────────
+# ── Callback: verify answer ───────────────────────────────────────────────────
 async def cb_verify(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    cq  = update.callback_query
-    uid = cq.from_user.id
-    await cq.answer()   # dismiss the loading spinner immediately
-
-    parts    = cq.data.split("_")         # ans_<selected>_<correct>
+    cq       = update.callback_query
+    uid      = cq.from_user.id
+    parts    = cq.data.split("_")   # ans_<selected>_<correct>
     selected = int(parts[1])
     correct  = int(parts[2])
-    print(f"[VERIFY] user={uid} selected={selected} correct={correct}")
+    print(f"[VERIFY] user={uid} sel={selected} correct={correct}")
 
     if selected != correct:
         await cq.answer("\u274C Wrong! Try again or send /start.", show_alert=True)
         return
 
-    await cq.answer("\u2705 Correct! Sending your links...", show_alert=True)
-
-    # Clean up captcha message
+    await cq.answer("\u2705 Correct! Generating your links...", show_alert=True)
     try:
         await cq.message.delete()
     except Exception:
         pass
 
-    # Generate one-time invite links (expire in 65 s, single-use)
     expire_dt = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=65)
-    links   = {}
-    invites = []
-    bot     = ctx.bot
+    links, invites = {}, []
 
     for name, cid in CHAT_IDS.items():
         key = f"link_{name}"
         if cid.strip():
             try:
-                inv = await bot.create_chat_invite_link(
+                inv = await ctx.bot.create_chat_invite_link(
                     chat_id=int(cid.strip()),
                     member_limit=1,
                     expire_date=expire_dt,
                 )
-                links[key]  = inv.invite_link
+                links[key] = inv.invite_link
                 invites.append((int(cid.strip()), inv.invite_link))
             except Exception as e:
-                print(f"[LINK] {name} error: {e}")
+                print(f"[LINK] {name}: {e}")
                 links[key] = "\u274C Bot not admin here"
         else:
-            links[key] = "\u274C Not configured (add in Render env)"
+            links[key] = "\u274C Not configured in Render"
 
-    msg = await bot.send_message(
+    msg = await ctx.bot.send_message(
         chat_id=uid,
         text=PROMO_TEMPLATE.format(time_left=60, **links),
         disable_web_page_preview=True,
     )
-    print(f"[PROMO] sent to {uid}, msg_id={msg.message_id}")
+    print(f"[PROMO] sent msg_id={msg.message_id} to {uid}")
+    asyncio.create_task(expire_message(ctx.bot, uid, msg.message_id, links, invites))
 
-    # Schedule countdown + auto-delete
-    asyncio.create_task(expire_message(bot, uid, msg.message_id, links, invites))
-
-# ── Countdown timer → revoke links → delete message ──────────────────────────
+# ── Countdown + revoke + delete ───────────────────────────────────────────────
 async def expire_message(bot, chat_id, msg_id, links, invites, total=60, step=5):
     remaining = total
     while remaining > 0:
@@ -208,7 +233,6 @@ async def expire_message(bot, chat_id, msg_id, links, invites, total=60, step=5)
             except Exception:
                 pass
 
-    # Revoke all one-time links
     for cid, link in invites:
         try:
             await bot.revoke_chat_invite_link(chat_id=cid, invite_link=link)
@@ -216,69 +240,31 @@ async def expire_message(bot, chat_id, msg_id, links, invites, total=60, step=5)
         except Exception as e:
             print(f"[REVOKE] error: {e}")
 
-    # Delete the message
     try:
         await bot.delete_message(chat_id=chat_id, message_id=msg_id)
     except Exception as e:
         print(f"[DELETE] error: {e}")
 
-# ── Health check web server (aiohttp) ─────────────────────────────────────────
-async def run_health_server():
-    async def handle(request):
-        return web.Response(text="Jimmy Bot is alive!", status=200)
-    app_web = web.Application()
-    app_web.router.add_route("*", "/{tail:.*}", handle)
-    runner = web.AppRunner(app_web)
-    await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", PORT).start()
-    print(f"[WEB] Health server on port {PORT}")
-
-# ── Auto-pinger thread (keeps Render free tier awake) ─────────────────────────
-def auto_ping_thread():
-    url = os.environ.get("RENDER_EXTERNAL_URL", "")
-    if not url:
-        print("[PING] RENDER_EXTERNAL_URL not set — skipping auto-ping")
-        return
-    if not url.startswith("http"):
-        url = "https://" + url
-    import time
-    while True:
-        time.sleep(240)  # every 4 minutes
-        try:
-            r = req.get(url, timeout=10)
-            print(f"[PING] {url} → {r.status_code}")
-        except Exception as e:
-            print(f"[PING] error: {e}")
-
-# ── Main ──────────────────────────────────────────────────────────────────────
-async def main():
+# ── Entry point ───────────────────────────────────────────────────────────────
+if __name__ == "__main__":
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN environment variable is not set!")
+        raise SystemExit("ERROR: BOT_TOKEN environment variable is not set!")
 
-    # Start health server
-    await run_health_server()
+    # Threads (no asyncio conflicts — fully isolated)
+    threading.Thread(target=_start_health_server, daemon=True).start()
+    threading.Thread(target=_auto_ping,           daemon=True).start()
 
-    # Start pinger in background thread (avoids asyncio loop conflicts entirely)
-    t = threading.Thread(target=auto_ping_thread, daemon=True)
-    t.start()
+    # Build PTB application
+    application = Application.builder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", cmd_start))
+    application.add_handler(CommandHandler("ping",  cmd_ping))
+    application.add_handler(CommandHandler("id",    cmd_id))
+    application.add_handler(CallbackQueryHandler(cb_verify, pattern=r"^ans_-?\d+_-?\d+$"))
 
-    # Build and start the bot (drop_pending_updates clears stuck queue)
-    bot_app = (
-        Application.builder()
-        .token(BOT_TOKEN)
-        .build()
-    )
+    print("[BOT] \U0001F7E2 Starting — bot is live 24/7!")
 
-    bot_app.add_handler(CommandHandler("start", cmd_start))
-    bot_app.add_handler(CommandHandler("ping",  cmd_ping))
-    bot_app.add_handler(CommandHandler("id",    cmd_id))
-    bot_app.add_handler(CallbackQueryHandler(cb_verify, pattern=r"^ans_-?\d+_-?\d+$"))
-
-    print("[BOT] \U0001F7E2 Starting polling — bot is live 24/7!")
-    await bot_app.run_polling(
-        drop_pending_updates=True,   # clears the 15 stuck updates immediately
+    # run_polling() called DIRECTLY (not inside async) — it manages its OWN loop
+    application.run_polling(
+        drop_pending_updates=True,
         allowed_updates=Update.ALL_TYPES,
     )
-
-if __name__ == "__main__":
-    asyncio.run(main())
