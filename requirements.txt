@@ -1,4 +1,4 @@
-pyrogram
-tgcrypto
+python-telegram-bot==20.7
 Pillow
 aiohttp
+requests

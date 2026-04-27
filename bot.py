@@ -1,18 +1,33 @@
+"""
+Jimmy Refunds Captcha Bot
+Framework: python-telegram-bot v20 (asyncio-native, no loop conflicts)
+"""
+
 import os
 import random
 import asyncio
 import io
 import datetime
+import threading
+import requests as req
+
 from aiohttp import web
-from pyrogram import Client, filters, idle
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from pyrogram.errors import MessageDeleteForbidden, FloodWait
 from PIL import Image, ImageDraw, ImageFont
 
-# ── Config ───────────────────────────────────────────────────────────────────
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-API_ID    = int(os.environ.get("API_ID", "2040"))
-API_HASH  = os.environ.get("API_HASH", "b18441a1ff607e10a989891a5462e627")
+from telegram import (
+    Update,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+)
+
+# ── Config ────────────────────────────────────────────────────────────────────
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 PORT      = int(os.environ.get("PORT", "10000"))
 
 CHAT_IDS = {
@@ -24,27 +39,14 @@ CHAT_IDS = {
     "billpay":      os.environ.get("CHAT_BILLPAY", ""),
 }
 
-# ── Pyrogram Client ───────────────────────────────────────────────────────────
-app = Client(
-    name="captcha_bot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-    in_memory=True,
-)
-
-# ── In-memory captcha store ───────────────────────────────────────────────────
-ACTIVE_CAPTCHAS: dict = {}
-
-# ── Promo Template ────────────────────────────────────────────────────────────
+# ── Promo message template ────────────────────────────────────────────────────
 PROMO_TEMPLATE = (
-    "\U0001F4E8 Your links (valid for \u23F3 {time_left} seconds):\n\n"
+    "\U0001F4E8 Your exclusive links \u2014 valid for \u23F3 {time_left}s:\n\n"
     "\u26A1\uFE0F JIMMY R\u00A3FUNDS \u26A1\uFE0F\n"
     "Reship Like a Pro. Control Like a Boss.\n\n"
     "\u2E3B\n\n"
-    "\U0001F31F Warm Greetings from the Jimmy Team! \U0001F31F\n"
-    "Welcome to the most trusted and efficient reship & R\u20ACfund network \u2014 "
-    "where precision, privacy, and professionalism meet speed and reliability.\n\n"
+    "\U0001F31F Warm Greetings from the Jimmy Team!\n"
+    "Welcome to the most trusted reship & R\u20ACfund network.\n\n"
     "\u2E3B\n\n"
     "\U0001F4E6 Official Jimmy Network Links:\n\n"
     "\U0001F539 Cashback Lounge:\n\U0001F449 {link_cashback}\n\n"
@@ -52,17 +54,17 @@ PROMO_TEMPLATE = (
     "\U0001F539 StoreList:\n\U0001F449 {link_storelist}\n\n"
     "\U0001F539 Vouches:\n\U0001F449 {link_vouches}\n\n"
     "\U0001F539 Cashout:\n\U0001F449 {link_cashout}\n\n"
-    "\U0001F539 BillPay/Discounts/bookings:\n\U0001F449 {link_billpay}\n\n"
+    "\U0001F539 BillPay/Discounts/Bookings:\n\U0001F449 {link_billpay}\n\n"
     "\U0001F451 Founder & Refunder:\n"
     "\U0001F449 @JimmyRefund / @JimmyRefs \U0001F48E https://t.me/JimmyRefund\n\n"
     "1. Click each link and join\n"
-    "2. Make sure to join ALL groups above\n"
+    "2. Join ALL groups listed above\n"
     "3. Missed one? Send /start again"
 )
 
 # ── Captcha image ─────────────────────────────────────────────────────────────
 def make_captcha_image(text: str) -> io.BytesIO:
-    img = Image.new("RGB", (400, 160), color=(30, 30, 30))
+    img  = Image.new("RGB", (400, 160), color=(30, 30, 30))
     draw = ImageDraw.Draw(img)
     try:
         font = ImageFont.load_default(size=58)
@@ -80,179 +82,203 @@ def make_captcha_image(text: str) -> io.BytesIO:
     buf.seek(0)
     return buf
 
-# ── /id helper ────────────────────────────────────────────────────────────────
-@app.on_message(filters.command("id"))
-async def cmd_id(client, message):
-    await message.reply(f"Chat ID: `{message.chat.id}`")
+# ── /id command ───────────────────────────────────────────────────────────────
+async def cmd_id(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        f"\U0001F4CB Chat ID: `{update.effective_chat.id}`\n\nCopy this into Render env vars.",
+        parse_mode="Markdown",
+    )
 
-# ── /ping ─────────────────────────────────────────────────────────────────────
-@app.on_message(filters.command("ping") & filters.private)
-async def cmd_ping(client, message):
-    await message.reply("\u2705 Bot is alive and working 24/7!")
+# ── /ping command ─────────────────────────────────────────────────────────────
+async def cmd_ping(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("\u2705 Bot is alive and running 24/7!")
 
-# ── /start ────────────────────────────────────────────────────────────────────
-@app.on_message(filters.command("start") & filters.private)
-async def cmd_start(client, message):
-    uid = message.from_user.id
+# ── /start command ────────────────────────────────────────────────────────────
+async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
     print(f"[START] user={uid}")
-    try:
-        op = random.choice(["+", "-"])
-        if op == "+":
-            a, b = random.randint(10, 50), random.randint(10, 50)
-        else:
-            a = random.randint(20, 60)
-            b = random.randint(5, a - 1)
-        ans = a + b if op == "+" else a - b
 
-        choices = [ans]
-        while len(choices) < 4:
-            w = ans + random.choice([-1, 1]) * random.randint(1, 15)
-            if w >= 0 and w not in choices:
-                choices.append(w)
-        random.shuffle(choices)
+    op = random.choice(["+", "-"])
+    if op == "+":
+        a, b = random.randint(10, 50), random.randint(10, 50)
+    else:
+        a = random.randint(20, 60)
+        b = random.randint(5, a - 1)
+    ans = a + b if op == "+" else a - b
 
-        # Embed correct answer in callback_data so we never need the in-memory store
-        rows = []
-        for i in range(0, 4, 2):
-            rows.append([
-                InlineKeyboardButton(str(choices[i]),     callback_data=f"ans_{choices[i]}_{ans}"),
-                InlineKeyboardButton(str(choices[i + 1]), callback_data=f"ans_{choices[i+1]}_{ans}"),
-            ])
+    choices = [ans]
+    while len(choices) < 4:
+        w = ans + random.choice([-1, 1]) * random.randint(1, 15)
+        if w >= 0 and w not in choices:
+            choices.append(w)
+    random.shuffle(choices)
 
-        await message.reply_photo(
-            photo=make_captcha_image(f"{a} {op} {b} = ?"),
-            caption="\U0001F916 HUMAN VERIFICATION\n\nSolve the math problem above to get your links:",
-            reply_markup=InlineKeyboardMarkup(rows),
-        )
-        print(f"[START] captcha sent to {uid}")
-    except Exception as e:
-        print(f"[START] ERROR: {e}")
+    # Embed correct answer directly in callback_data → no DB needed
+    rows = [
+        [
+            InlineKeyboardButton(str(choices[0]), callback_data=f"ans_{choices[0]}_{ans}"),
+            InlineKeyboardButton(str(choices[1]), callback_data=f"ans_{choices[1]}_{ans}"),
+        ],
+        [
+            InlineKeyboardButton(str(choices[2]), callback_data=f"ans_{choices[2]}_{ans}"),
+            InlineKeyboardButton(str(choices[3]), callback_data=f"ans_{choices[3]}_{ans}"),
+        ],
+    ]
 
-# ── Callback: verify answer ───────────────────────────────────────────────────
-@app.on_callback_query(filters.regex(r"^ans_(-?\d+)_(-?\d+)$"))
-async def cb_answer(client, cq):
-    uid      = cq.from_user.id
-    selected = int(cq.matches[0].group(1))
-    correct  = int(cq.matches[0].group(2))
+    await update.message.reply_photo(
+        photo=make_captcha_image(f"{a} {op} {b} = ?"),
+        caption=(
+            "\U0001F916 HUMAN VERIFICATION\n\n"
+            "Solve the math problem above to receive your private group links:"
+        ),
+        reply_markup=InlineKeyboardMarkup(rows),
+    )
+    print(f"[START] captcha sent to {uid}")
+
+# ── Button callback ───────────────────────────────────────────────────────────
+async def cb_verify(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    cq  = update.callback_query
+    uid = cq.from_user.id
+    await cq.answer()   # dismiss the loading spinner immediately
+
+    parts    = cq.data.split("_")         # ans_<selected>_<correct>
+    selected = int(parts[1])
+    correct  = int(parts[2])
     print(f"[VERIFY] user={uid} selected={selected} correct={correct}")
 
     if selected != correct:
-        await cq.answer("\u274C Wrong! Try again or send /start for a new question.", show_alert=True)
+        await cq.answer("\u274C Wrong! Try again or send /start.", show_alert=True)
         return
 
-    await cq.answer("\u2705 Verified! Here are your links.", show_alert=False)
+    await cq.answer("\u2705 Correct! Sending your links...", show_alert=True)
+
+    # Clean up captcha message
     try:
         await cq.message.delete()
     except Exception:
         pass
 
-    # Generate one-time 65-second expiry invite links
-    expire_date = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=65)
+    # Generate one-time invite links (expire in 65 s, single-use)
+    expire_dt = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=65)
     links   = {}
     invites = []
+    bot     = ctx.bot
+
     for name, cid in CHAT_IDS.items():
+        key = f"link_{name}"
         if cid.strip():
             try:
-                inv = await client.create_chat_invite_link(
+                inv = await bot.create_chat_invite_link(
                     chat_id=int(cid.strip()),
                     member_limit=1,
-                    expire_date=expire_date,
+                    expire_date=expire_dt,
                 )
-                links[f"link_{name}"] = inv.invite_link
+                links[key]  = inv.invite_link
                 invites.append((int(cid.strip()), inv.invite_link))
             except Exception as e:
-                print(f"[LINK] {name} failed: {e}")
-                links[f"link_{name}"] = "\u274C Bot not admin in this channel"
+                print(f"[LINK] {name} error: {e}")
+                links[key] = "\u274C Bot not admin here"
         else:
-            links[f"link_{name}"] = "\u274C Not configured in Render"
+            links[key] = "\u274C Not configured (add in Render env)"
 
-    try:
-        msg = await client.send_message(
-            chat_id=uid,
-            text=PROMO_TEMPLATE.format(time_left=60, **links),
-            disable_web_page_preview=True,
-        )
-        asyncio.create_task(expire_message(client, uid, msg.id, links, invites))
-        print(f"[PROMO] sent to {uid}")
-    except Exception as e:
-        print(f"[PROMO] send error: {e}")
+    msg = await bot.send_message(
+        chat_id=uid,
+        text=PROMO_TEMPLATE.format(time_left=60, **links),
+        disable_web_page_preview=True,
+    )
+    print(f"[PROMO] sent to {uid}, msg_id={msg.message_id}")
 
-# ── Timer: countdown + revoke + delete ────────────────────────────────────────
-async def expire_message(client, chat_id, msg_id, links, invites, total=60, step=5):
+    # Schedule countdown + auto-delete
+    asyncio.create_task(expire_message(bot, uid, msg.message_id, links, invites))
+
+# ── Countdown timer → revoke links → delete message ──────────────────────────
+async def expire_message(bot, chat_id, msg_id, links, invites, total=60, step=5):
     remaining = total
     while remaining > 0:
         await asyncio.sleep(step)
         remaining -= step
         if remaining > 0:
             try:
-                await client.edit_message_text(
+                await bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=msg_id,
                     text=PROMO_TEMPLATE.format(time_left=remaining, **links),
                     disable_web_page_preview=True,
                 )
-            except FloodWait as e:
-                await asyncio.sleep(e.value)
             except Exception:
                 pass
 
+    # Revoke all one-time links
     for cid, link in invites:
         try:
-            await client.revoke_chat_invite_link(chat_id=cid, invite_link=link)
+            await bot.revoke_chat_invite_link(chat_id=cid, invite_link=link)
             print(f"[REVOKE] {link}")
         except Exception as e:
-            print(f"[REVOKE] failed: {e}")
+            print(f"[REVOKE] error: {e}")
 
+    # Delete the message
     try:
-        await client.delete_messages(chat_id=chat_id, message_ids=msg_id)
+        await bot.delete_message(chat_id=chat_id, message_id=msg_id)
     except Exception as e:
-        print(f"[DELETE] failed: {e}")
+        print(f"[DELETE] error: {e}")
 
-# ── Health endpoint (Render / UptimeRobot) ────────────────────────────────────
-async def start_web_server():
+# ── Health check web server (aiohttp) ─────────────────────────────────────────
+async def run_health_server():
     async def handle(request):
-        return web.Response(text="Bot is alive!", status=200)
+        return web.Response(text="Jimmy Bot is alive!", status=200)
     app_web = web.Application()
     app_web.router.add_route("*", "/{tail:.*}", handle)
     runner = web.AppRunner(app_web)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", PORT).start()
-    print(f"[WEB] Health server running on port {PORT}")
+    print(f"[WEB] Health server on port {PORT}")
 
-# ── Auto-pinger (keeps Render free tier alive) ────────────────────────────────
-async def auto_ping():
-    import aiohttp
-    timeout = aiohttp.ClientTimeout(total=10)
+# ── Auto-pinger thread (keeps Render free tier awake) ─────────────────────────
+def auto_ping_thread():
+    url = os.environ.get("RENDER_EXTERNAL_URL", "")
+    if not url:
+        print("[PING] RENDER_EXTERNAL_URL not set — skipping auto-ping")
+        return
+    if not url.startswith("http"):
+        url = "https://" + url
+    import time
     while True:
-        await asyncio.sleep(240)   # every 4 minutes
-        url = os.environ.get("RENDER_EXTERNAL_URL", "")
-        if url:
-            if not url.startswith("http"):
-                url = "https://" + url
-            try:
-                async with aiohttp.ClientSession(timeout=timeout) as session:
-                    async with session.get(url) as r:
-                        print(f"[PING] {url} -> {r.status}")
-            except Exception as e:
-                print(f"[PING] error: {e}")
+        time.sleep(240)  # every 4 minutes
+        try:
+            r = req.get(url, timeout=10)
+            print(f"[PING] {url} → {r.status_code}")
+        except Exception as e:
+            print(f"[PING] error: {e}")
 
-# ── Startup: called by app.run() INSIDE Pyrogram's own event loop ─────────────
-async def startup():
-    """
-    app.run(coroutine) does:
-      1. app.start()
-      2. run coroutine  ← we are here
-      3. app.stop()     ← happens immediately after unless we block
+# ── Main ──────────────────────────────────────────────────────────────────────
+async def main():
+    if not BOT_TOKEN:
+        raise RuntimeError("BOT_TOKEN environment variable is not set!")
 
-    We MUST call idle() ourselves to keep the bot alive.
-    """
-    await start_web_server()
-    asyncio.get_event_loop().create_task(auto_ping())
-    print("[BOT] \U0001F7E2 Ready — listening 24/7, awaiting messages...")
-    await idle()   # ← BLOCKS HERE FOREVER until SIGTERM/KeyboardInterrupt
+    # Start health server
+    await run_health_server()
+
+    # Start pinger in background thread (avoids asyncio loop conflicts entirely)
+    t = threading.Thread(target=auto_ping_thread, daemon=True)
+    t.start()
+
+    # Build and start the bot (drop_pending_updates clears stuck queue)
+    bot_app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    bot_app.add_handler(CommandHandler("start", cmd_start))
+    bot_app.add_handler(CommandHandler("ping",  cmd_ping))
+    bot_app.add_handler(CommandHandler("id",    cmd_id))
+    bot_app.add_handler(CallbackQueryHandler(cb_verify, pattern=r"^ans_-?\d+_-?\d+$"))
+
+    print("[BOT] \U0001F7E2 Starting polling — bot is live 24/7!")
+    await bot_app.run_polling(
+        drop_pending_updates=True,   # clears the 15 stuck updates immediately
+        allowed_updates=Update.ALL_TYPES,
+    )
 
 if __name__ == "__main__":
-    print("[BOT] Initializing...")
-    app.run(startup())
-
-
+    asyncio.run(main())
